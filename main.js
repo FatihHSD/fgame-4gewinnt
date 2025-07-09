@@ -40,7 +40,6 @@ codeForm.onsubmit = async (e) => {
   codeForm.style.display = 'none';
   const ok = await joinGame(code);
   if (!ok) return;
-  setStatus(`Du bist ${myPlayer === 1 ? 'Schwarz (Startspieler)' : 'Weiß'}. Warte ggf. auf den zweiten Spieler.`);
   await listenToGameState();
   await listenToRestart();
   // Wenn noch kein Spiel existiert, initialisiere es
