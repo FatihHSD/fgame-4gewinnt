@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiplayer Browser Spiel</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1 id="hello">Hello World!</h1>
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js";
+      import { getDatabase } from "https://www.gstatic.com/firebasejs/11.10.0/firebase-database.js";
+      // Deine Firebase-Konfiguration
+      const firebaseConfig = {
+        apiKey: "AIzaSyAwH5QRhgnSa4JDPl2NBH7_nWkEPAEmxR4",
+        authDomain: "fgame-4gewinnt.firebaseapp.com",
+        databaseURL: "https://fgame-4gewinnt-default-rtdb.europe-west1.firebasedatabase.app",
+        projectId: "fgame-4gewinnt",
+        storageBucket: "fgame-4gewinnt.firebasestorage.app",
+        messagingSenderId: "605930780591",
+        appId: "1:605930780591:web:382137d28ca91eb4e7a15a",
+        measurementId: "G-7E3VC82120"
+      };
+      // Firebase initialisieren
+      const app = initializeApp(firebaseConfig);
+      window.firebaseDatabase = getDatabase(app);
+    </script>
+    <script src="main.js"></script>
+</body>
+</html>
