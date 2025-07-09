@@ -15,6 +15,7 @@ const COLS = 7;
 const board = [];
 let currentPlayer = 1; // 1 = Schwarz, 2 = Weiß
 let gameOver = false;
+let myPlayer = null; // 1 = Schwarz, 2 = Weiß
 
 const boardElem = document.createElement('div');
 boardElem.id = 'board';
@@ -37,13 +38,123 @@ codeForm.onsubmit = async (e) => {
   if (!code) return;
   joinedCode = code;
   codeForm.style.display = 'none';
-  setStatus(`Mit Code "${code}" verbunden. Warte auf zweiten Spieler oder beginne das Spiel!`);
+  const ok = await joinGame(code);
+  if (!ok) return;
+  setStatus(`Du bist ${myPlayer === 1 ? 'Schwarz (Startspieler)' : 'Weiß'}. Warte ggf. auf den zweiten Spieler.`);
   await listenToGameState();
+  await listenToRestart();
   // Wenn noch kein Spiel existiert, initialisiere es
   if (board.flat().every(cell => cell === 0)) {
     await saveGameState();
   }
+  fetchLobbies(); // Nach Join sofort Lobbys neu laden
 };
+
+/*
+Sidebar für offene Lobbys mit Button
+*/
+const lobbySidebar = document.createElement('div');
+lobbySidebar.id = 'lobbySidebar';
+lobbySidebar.innerHTML = `<h3>Offene Lobbys</h3><button id="refreshLobbiesBtn" class="lobbyJoinBtn" style="margin-bottom:12px;">Suche Lobbys</button><div id="lobbyList">Suche Lobby.....</div>`;
+document.body.appendChild(lobbySidebar);
+document.getElementById('refreshLobbiesBtn').onclick = fetchLobbies;
+
+async function fetchLobbies() {
+  if (joinedCode) {
+    updateLobbySidebar();
+    return;
+  }
+  if (!db) return;
+  const { ref, get } = await getDbFns();
+  const gamesRef = ref(db, 'games');
+  const snapshot = await get(gamesRef);
+  const lobbyList = document.getElementById('lobbyList');
+  lobbyList.innerHTML = '';
+  if (!snapshot.exists()) {
+    lobbyList.innerHTML = '<span style="color:#888">Keine offenen Lobbys</span>';
+    return;
+  }
+  const games = snapshot.val();
+  let found = false;
+  Object.entries(games).forEach(([code, data]) => {
+    if (data && data.players && (!data.players[2] || !data.gameOver)) {
+      found = true;
+      const btn = document.createElement('button');
+      btn.className = 'lobbyJoinBtn';
+      btn.textContent = code + (data.players[2] ? ' (läuft)' : ' (offen)');
+      btn.onclick = () => {
+        document.getElementById('gameCode').value = code;
+        codeForm.requestSubmit();
+      };
+      lobbyList.appendChild(btn);
+    }
+  });
+  if (!found) lobbyList.innerHTML = '<span style="color:#888">Keine offenen Lobbys</span>';
+}
+fetchLobbies(); // Nur einmal initial laden
+window.addEventListener('DOMContentLoaded', fetchLobbies);
+
+// Hilfsfunktion: Zeitstempel holen
+function now() {
+  return Date.now();
+}
+
+// joinGame: Lobby wird zurückgesetzt, wenn Spiel vorbei, zu alt oder beide Spieler lange inaktiv
+async function joinGame(code) {
+  if (!db) return;
+  const { ref, get, set, update, remove } = await getDbFns();
+  const gameRef = ref(db, 'games/' + code);
+  const snapshot = await get(gameRef);
+  let data = snapshot.val();
+  const MAX_AGE = 1000 * 60 * 60; // 1 Stunde
+  const MAX_INACTIVE = 1000 * 60 * 2; // 2 Minuten
+  const tooOld = data && data.timestamp && (now() - data.timestamp > MAX_AGE);
+  const finished = data && data.gameOver;
+  // Prüfe Inaktivität beider Spieler
+  let bothInactive = false;
+  if (data && data.players) {
+    const p1 = data.players[1]?.lastActive || 0;
+    const p2 = data.players[2]?.lastActive || 0;
+    if (p1 && p2 && now() - p1 > MAX_INACTIVE && now() - p2 > MAX_INACTIVE) {
+      bothInactive = true;
+    }
+  }
+  if (!data || tooOld || finished || bothInactive) {
+    // Lobby zurücksetzen
+    myPlayer = 1;
+    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) board[r][c] = 0;
+    currentPlayer = 1;
+    gameOver = false;
+    await set(gameRef, {
+      board,
+      currentPlayer: 1,
+      gameOver: false,
+      players: { 1: { lastActive: now() } },
+      timestamp: now()
+    });
+  } else {
+    // Spiel existiert schon
+    if (!data.players || !data.players[2]) {
+      myPlayer = 2;
+      await update(gameRef, { 'players/2': { lastActive: now() }, timestamp: now() });
+    } else if (data.players[1] && !data.players[2]) {
+      myPlayer = 2;
+      await update(gameRef, { 'players/2': { lastActive: now() }, timestamp: now() });
+    } else if (data.players[2] && !data.players[1]) {
+      myPlayer = 1;
+      await update(gameRef, { 'players/1': { lastActive: now() }, timestamp: now() });
+    } else {
+      setStatus('Lobby ist voll!');
+      return false;
+    }
+  }
+  // Aktualisiere lastActive regelmäßig
+  setInterval(async () => {
+    const { ref, update } = await getDbFns();
+    await update(gameRef, { ['players/' + myPlayer + '/lastActive']: now() });
+  }, 30000); // alle 30 Sekunden
+  return true;
+}
 
 function createBoard() {
     boardElem.innerHTML = '';
@@ -63,6 +174,7 @@ function createBoard() {
 
 function handleMove(col) {
     if (gameOver || !joinedCode) return;
+    if (myPlayer !== currentPlayer) return;
     for (let row = ROWS - 1; row >= 0; row--) {
         if (board[row][col] === 0) {
             board[row][col] = currentPlayer;
@@ -70,11 +182,12 @@ function handleMove(col) {
             if (checkWin(row, col)) {
                 gameOver = true;
                 setStatus(`Spieler ${currentPlayer === 1 ? 'Schwarz' : 'Weiß'} gewinnt!`);
+                saveGameState();
             } else {
                 currentPlayer = 3 - currentPlayer;
                 setStatus(`Am Zug: ${currentPlayer === 1 ? 'Schwarz' : 'Weiß'}`);
+                saveGameState();
             }
-            saveGameState(); // Spielstand speichern
             return;
         }
     }
@@ -166,7 +279,108 @@ async function listenToGameState() {
   });
 }
 
+// Game-Over-Overlay für beide Spieler anzeigen und Neustart synchronisieren
+let gameOverOverlay = null;
+let restartRequested = false;
+let restartBy = null;
+
+function showGameOver(winner) {
+  if (!gameOverOverlay) {
+    gameOverOverlay = document.createElement('div');
+    gameOverOverlay.id = 'gameOverOverlay';
+    gameOverOverlay.innerHTML = `
+      <div class="gameover-box">
+        <h2 id="gameover-text"></h2>
+        <button id="restartBtn">Play Again</button>
+      </div>
+    `;
+    document.body.appendChild(gameOverOverlay);
+    document.getElementById('restartBtn').onclick = requestRestart;
+  }
+  document.getElementById('gameover-text').textContent = `${winner} hat gewonnen!`;
+  gameOverOverlay.style.display = 'flex';
+}
+function hideGameOver() {
+  if (gameOverOverlay) gameOverOverlay.style.display = 'none';
+}
+
+// Zeige Overlay, wenn das Spiel vorbei ist (auch wenn man nicht der Gewinner ist)
+function checkAndShowGameOver() {
+  if (gameOver) {
+    showGameOver(currentPlayer === 1 ? 'Schwarz' : 'Weiß');
+  }
+}
+
+// Neustartwunsch in die DB schreiben
+async function requestRestart() {
+  if (!db || !joinedCode) return;
+  const { ref, update } = await getDbFns();
+  await update(ref(db, 'games/' + joinedCode), { restartRequest: myPlayer });
+}
+
+// Neustart, wenn einer gedrückt hat
+async function listenToRestart() {
+  if (!db || !joinedCode) return;
+  const { ref, onValue } = await getDbFns();
+  const gameRef = ref(db, 'games/' + joinedCode);
+  onValue(gameRef, (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      // Overlay für beide anzeigen, wenn gameOver true
+      if (data.gameOver) {
+        gameOver = true;
+        showGameOver(data.currentPlayer === 1 ? 'Schwarz' : 'Weiß');
+      } else {
+        hideGameOver();
+      }
+      // Neustart
+      if (data.restartRequest && !restartRequested) {
+        restartRequested = true;
+        restartBy = data.restartRequest;
+        restartGame(restartBy);
+      }
+    }
+  });
+}
+
+// Restart-Logik: Wer zuerst klickt, beginnt
+async function restartGame(starter) {
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) board[r][c] = 0;
+  currentPlayer = starter;
+  gameOver = false;
+  updateBoard();
+  setStatus('Am Zug: ' + (currentPlayer === 1 ? 'Schwarz' : 'Weiß'));
+  hideGameOver();
+  restartRequested = false;
+  const { ref, update } = await getDbFns();
+  await update(ref(db, 'games/' + joinedCode), {
+    board,
+    currentPlayer,
+    gameOver,
+    restartRequest: null
+  });
+}
+
 // Initialisierung
 createBoard();
 updateBoard();
 setStatus('Am Zug: Schwarz');
+
+function updateLobbySidebar() {
+  const sidebar = document.getElementById('lobbySidebar');
+  const lobbyList = document.getElementById('lobbyList');
+  if (joinedCode) {
+    sidebar.innerHTML = `<h3>Lobby: <span style='color:#fff'>${joinedCode}</span></h3><button id='leaveLobbyBtn' class='lobbyJoinBtn' style='margin-top:18px;'>Lobby fliehen</button>`;
+    document.getElementById('leaveLobbyBtn').onclick = leaveLobby;
+  }
+}
+
+async function leaveLobby() {
+  if (!db || !joinedCode) return;
+  const { ref, update } = await getDbFns();
+  await update(ref(db, 'games/' + joinedCode), { ['players/' + myPlayer]: null });
+  joinedCode = null;
+  myPlayer = null;
+  fetchLobbies(); // Nach dem Verlassen sofort Lobbys neu laden
+  location.reload();
+}
